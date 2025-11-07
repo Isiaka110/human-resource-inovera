@@ -1,30 +1,27 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// prisma/schema.prisma
 
 generator client {
-  provider = "postgresql"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
+// 🎯 Set the provider to 'mongodb'
 datasource db {
-  provider = "postgresql"
+  provider = "mongodb"
+  // ✅ Use the standard 'DATABASE_URL' environment variable
+  // This is often more reliable, especially when encountering environment variable errors.
   url      = env("DATABASE_URL")
 }
-// prisma/schema.prisma (Continue from Step 1)
 
 // =========================================================
 // Enums for fixed values
 // =========================================================
 
 enum ProjectStatus {
-  Pending
-  // Use @map to handle spaces in database column values
-  In_Progress @map("In Progress")
-  Completed
-  Canceled
+  PLANNED @map("Planned")
+  IN_PROGRESS @map("In Progress")
+  COMPLETED @map("Completed")
+  CANCELLED @map("Cancelled")
+  ON_HOLD @map("On Hold")
 }
 
 enum TaskPriority {
@@ -42,92 +39,97 @@ enum TaskStatus {
 }
 
 // =========================================================
-// 1. ROLES Table (Lookup Table)
+// 1. ROLES Collection (Lookup)
 // =========================================================
 model Role {
-  id      Int    @id @default(autoincrement())
-  name    String @unique @db.VarChar(50)
-  users   User[]
+  // 🎯 MongoDB ID pattern: String type with @id, @default(auto()), and @db.ObjectId
+  id    String @id @default(auto()) @map("_id") @db.ObjectId
+  name  String @unique
+  users User[]
 
-  @@map("roles") // Maps this model to the physical table name 'roles'
+  @@map("roles")
 }
 
 // =========================================================
-// 2. USERS Table (Staff/HR Data)
+// 2. USERS Collection (Staff/HR Data)
 // =========================================================
 model User {
-  id            Int      @id @default(autoincrement())
-  fullName      String   @db.VarChar(255)
-  email         String   @unique @db.VarChar(255)
-  passwordHash  String   @db.VarChar(255)
-  roleId        Int
-  jobTitle      String?  @db.VarChar(100)
-  department    String?  @db.VarChar(100)
-  phoneNumber   String?  @db.VarChar(20)
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt // Prisma handles the update timestamp automatically
+  id            String          @id @default(auto()) @map("_id") @db.ObjectId
+  fullName      String
+  email         String          @unique
+  passwordHash  String
+  roleId        String          // Reference to the Role ID
+  jobTitle      String?
+  department    String?
+  phoneNumber   String?
+  isActive      Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
 
-  role          Role     @relation(fields: [roleId], references: [id])
-  managedProjects Project[] @relation("ManagerProjects")
-  projects      UserProject[]
-  tasksAssigned Task[] @relation("AssignedTasks")
+  // Relationships
+  role            Role            @relation(fields: [roleId], references: [id])
+  managedProjects Project[]       @relation("ManagerProjects") // Projects this user manages
+  projects        UserProject[]   // Projects this user is assigned to
+  tasksAssigned   Task[]          @relation("AssignedTasks") // Tasks assigned to this user
 
   @@map("users")
 }
 
 // =========================================================
-// 3. PROJECTS Table
+// 3. PROJECTS Collection
 // =========================================================
 model Project {
-  id          Int      @id @default(autoincrement())
-  name        String   @db.VarChar(255)
-  description String?  @db.Text
-  startDate   DateTime @db.Date
-  endDate     DateTime @db.Date
-  status      ProjectStatus @default(Pending)
-  managerId   Int
-  createdAt   DateTime @default(now())
+  id            String          @id @default(auto()) @map("_id") @db.ObjectId
+  name          String
+  description   String?
+  startDate     DateTime
+  endDate       DateTime?       // Making endDate optional for flexibility
+  status        ProjectStatus   @default(PLANNED) // Using PLANNED from the new enum
+  managerId     String          @db.ObjectId // Reference to the User ID of the Project Manager
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt // Added updatedAt for tracking changes
 
-  manager     User     @relation("ManagerProjects", fields: [managerId], references: [id])
-  teamMembers UserProject[]
-  tasks       Task[]
+  // Relationships
+  manager       User            @relation("ManagerProjects", fields: [managerId], references: [id])
+  teamMembers   UserProject[]   // The team members assigned to this project
+  tasks         Task[]          // The tasks belonging to this project
 
   @@map("projects")
 }
 
 // =========================================================
-// 4. USER_PROJECTS Table (Many-to-Many)
+// 4. USER_PROJECTS Collection (Many-to-Many Join Table)
 // =========================================================
 model UserProject {
-  id          Int @id @default(autoincrement())
-  userId      Int
-  projectId   Int
+  id            String @id @default(auto()) @map("_id") @db.ObjectId
+  userId        String @db.ObjectId
+  projectId     String @db.ObjectId
 
-  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([userId, projectId])
   @@map("user_projects")
 }
 
 // =========================================================
-// 5. TASKS Table
+// 5. TASKS Collection
 // =========================================================
 model Task {
-  id            Int      @id @default(autoincrement())
-  projectId     Int
-  assignedToUserId Int
-  title         String   @db.VarChar(255)
-  description   String?  @db.Text
-  priority      TaskPriority @default(Medium)
-  status        TaskStatus @default(To_Do)
-  dueDate       DateTime? @db.Date
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                String          @id @default(auto()) @map("_id") @db.ObjectId
+  projectId         String          @db.ObjectId
+  assignedToUserId  String          @db.ObjectId
+  title             String
+  description       String?
+  priority          TaskPriority    @default(Medium)
+  status            TaskStatus      @default(To_Do)
+  dueDate           DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
 
-  project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assignedTo    User    @relation("AssignedTasks", fields: [assignedToUserId], references: [id])
+  // Relationships
+  project           Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignedTo        User    @relation("AssignedTasks", fields: [assignedToUserId], references: [id])
 
   @@map("tasks")
 }
