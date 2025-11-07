@@ -1,0 +1,133 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "postgresql"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+// prisma/schema.prisma (Continue from Step 1)
+
+// =========================================================
+// Enums for fixed values
+// =========================================================
+
+enum ProjectStatus {
+  Pending
+  // Use @map to handle spaces in database column values
+  In_Progress @map("In Progress")
+  Completed
+  Canceled
+}
+
+enum TaskPriority {
+  Low
+  Medium
+  High
+  Critical
+}
+
+enum TaskStatus {
+  To_Do @map("To Do")
+  In_Progress @map("In Progress")
+  Testing
+  Done
+}
+
+// =========================================================
+// 1. ROLES Table (Lookup Table)
+// =========================================================
+model Role {
+  id      Int    @id @default(autoincrement())
+  name    String @unique @db.VarChar(50)
+  users   User[]
+
+  @@map("roles") // Maps this model to the physical table name 'roles'
+}
+
+// =========================================================
+// 2. USERS Table (Staff/HR Data)
+// =========================================================
+model User {
+  id            Int      @id @default(autoincrement())
+  fullName      String   @db.VarChar(255)
+  email         String   @unique @db.VarChar(255)
+  passwordHash  String   @db.VarChar(255)
+  roleId        Int
+  jobTitle      String?  @db.VarChar(100)
+  department    String?  @db.VarChar(100)
+  phoneNumber   String?  @db.VarChar(20)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt // Prisma handles the update timestamp automatically
+
+  role          Role     @relation(fields: [roleId], references: [id])
+  managedProjects Project[] @relation("ManagerProjects")
+  projects      UserProject[]
+  tasksAssigned Task[] @relation("AssignedTasks")
+
+  @@map("users")
+}
+
+// =========================================================
+// 3. PROJECTS Table
+// =========================================================
+model Project {
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(255)
+  description String?  @db.Text
+  startDate   DateTime @db.Date
+  endDate     DateTime @db.Date
+  status      ProjectStatus @default(Pending)
+  managerId   Int
+  createdAt   DateTime @default(now())
+
+  manager     User     @relation("ManagerProjects", fields: [managerId], references: [id])
+  teamMembers UserProject[]
+  tasks       Task[]
+
+  @@map("projects")
+}
+
+// =========================================================
+// 4. USER_PROJECTS Table (Many-to-Many)
+// =========================================================
+model UserProject {
+  id          Int @id @default(autoincrement())
+  userId      Int
+  projectId   Int
+
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@map("user_projects")
+}
+
+// =========================================================
+// 5. TASKS Table
+// =========================================================
+model Task {
+  id            Int      @id @default(autoincrement())
+  projectId     Int
+  assignedToUserId Int
+  title         String   @db.VarChar(255)
+  description   String?  @db.Text
+  priority      TaskPriority @default(Medium)
+  status        TaskStatus @default(To_Do)
+  dueDate       DateTime? @db.Date
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignedTo    User    @relation("AssignedTasks", fields: [assignedToUserId], references: [id])
+
+  @@map("tasks")
+}
