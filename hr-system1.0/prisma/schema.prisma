@@ -8,9 +8,10 @@ generator client {
 datasource db {
   provider = "mongodb"
   // ✅ Use the standard 'DATABASE_URL' environment variable
-  // This is often more reliable, especially when encountering environment variable errors.
-  url      = env("DATABASE_URL")
+  url          = env("DATABASE_URL")
 }
+
+// ... (Enums are unchanged) ...
 
 // =========================================================
 // Enums for fixed values
@@ -38,11 +39,18 @@ enum TaskStatus {
   Done
 }
 
+// --- UPDATED ENUM FOR LEAVE MANAGEMENT ---
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED 
+}
+
 // =========================================================
 // 1. ROLES Collection (Lookup)
 // =========================================================
 model Role {
-  // 🎯 MongoDB ID pattern: String type with @id, @default(auto()), and @db.ObjectId
   id    String @id @default(auto()) @map("_id") @db.ObjectId
   name  String @unique
   users User[]
@@ -54,23 +62,33 @@ model Role {
 // 2. USERS Collection (Staff/HR Data)
 // =========================================================
 model User {
-  id            String          @id @default(auto()) @map("_id") @db.ObjectId
-  fullName      String
-  email         String          @unique
-  passwordHash  String
-  roleId        String          // Reference to the Role ID
-  jobTitle      String?
-  department    String?
-  phoneNumber   String?
-  isActive      Boolean         @default(true)
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  id                String          @id @default(auto()) @map("_id") @db.ObjectId
+  fullName          String
+  email             String          @unique
+  hashedPassword    String          
+  roleId            String          @db.ObjectId 
+  jobTitle          String?
+  department        String?
+  phoneNumber       String?
+  isActive          Boolean         @default(true)
+  managerId         String?         @db.ObjectId 
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
 
   // Relationships
-  role            Role            @relation(fields: [roleId], references: [id])
-  managedProjects Project[]       @relation("ManagerProjects") // Projects this user manages
-  projects        UserProject[]   // Projects this user is assigned to
-  tasksAssigned   Task[]          @relation("AssignedTasks") // Tasks assigned to this user
+  role              Role          @relation(fields: [roleId], references: [id])
+  managedProjects   Project[]     @relation("ManagerProjects") 
+  projects          UserProject[]
+  tasksAssigned     Task[]        @relation("AssignedTasks") 
+  leaveRequests     LeaveRequest[]
+
+  // FIX 1: Explicitly set onUpdate: NoAction for the Manager self-relation
+  manager           User?         @relation("DirectReports", fields: [managerId], references: [id], onDelete: NoAction, onUpdate: NoAction) 
+  directReports     User[]        @relation("DirectReports")
+  
+  approvedRequests  LeaveRequest[] @relation("ApprovedRequests") 
+
+  leaveBalances     LeaveBalance[] 
 
   @@map("users")
 }
@@ -83,16 +101,14 @@ model Project {
   name          String
   description   String?
   startDate     DateTime
-  endDate       DateTime?       // Making endDate optional for flexibility
-  status        ProjectStatus   @default(PLANNED) // Using PLANNED from the new enum
-  managerId     String          @db.ObjectId // Reference to the User ID of the Project Manager
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt // Added updatedAt for tracking changes
+  endDate       DateTime?       
+  status        ProjectStatus   @default(PLANNED) 
+  managerId     String          @db.ObjectId 
 
-  // Relationships
-  manager       User            @relation("ManagerProjects", fields: [managerId], references: [id])
-  teamMembers   UserProject[]   // The team members assigned to this project
-  tasks         Task[]          // The tasks belonging to this project
+  // FIX 2: Explicitly set onUpdate: NoAction for the Project Manager relation
+  manager       User            @relation("ManagerProjects", fields: [managerId], references: [id], onDelete: NoAction, onUpdate: NoAction) 
+  teamMembers   UserProject[]
+  tasks         Task[]          
 
   @@map("projects")
 }
@@ -105,8 +121,10 @@ model UserProject {
   userId        String @db.ObjectId
   projectId     String @db.ObjectId
 
-  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  // FIX 3: Explicitly set onUpdate: NoAction
+  user          User    @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction) 
+  // FIX 4: Explicitly set onUpdate: NoAction
+  project       Project @relation(fields: [projectId], references: [id], onDelete: NoAction, onUpdate: NoAction) 
 
   @@unique([userId, projectId])
   @@map("user_projects")
@@ -127,9 +145,69 @@ model Task {
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
 
-  // Relationships
-  project           Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assignedTo        User    @relation("AssignedTasks", fields: [assignedToUserId], references: [id])
+  // FIX 5: Explicitly set onUpdate: NoAction
+  project           Project @relation(fields: [projectId], references: [id], onDelete: NoAction, onUpdate: NoAction) 
+  // FIX 6: Explicitly set onUpdate: NoAction
+  assignedTo        User    @relation("AssignedTasks", fields: [assignedToUserId], references: [id], onDelete: NoAction, onUpdate: NoAction) 
 
   @@map("tasks")
+}
+
+// =========================================================
+// 6. LEAVE MANAGEMENT COLLECTIONS
+// =========================================================
+
+model LeaveType {
+  id             String         @id @default(auto()) @map("_id") @db.ObjectId
+  name           String         @unique 
+  defaultDays    Float          @default(0) 
+  requests       LeaveRequest[] 
+
+  leaveBalances  LeaveBalance[]
+
+  @@map("leave_types")
+}
+
+model LeaveBalance {
+  id           String @id @default(auto()) @map("_id") @db.ObjectId
+  
+  userId       String @db.ObjectId
+  leaveTypeId  String @db.ObjectId
+  
+  currentBalance Float @default(0) 
+  
+  // RELATIONSHIPS
+  // FIX 7: Explicitly set onUpdate: NoAction
+  user         User @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction) 
+  leaveType    LeaveType @relation(fields: [leaveTypeId], references: [id])
+  
+  @@unique([userId, leaveTypeId])
+  @@map("leave_balances")
+}
+
+model LeaveRequest {
+  id            String      @id @default(auto()) @map("_id") @db.ObjectId
+  
+  userId        String      @db.ObjectId 
+  typeId        String      @db.ObjectId 
+  approverId    String?     @db.ObjectId 
+  
+  startDate     DateTime
+  endDate       DateTime
+  durationDays  Float       
+  reason        String?
+  status        LeaveStatus @default(PENDING)
+  
+  // Timestamps
+  submittedAt   DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt 
+
+  // Relationships
+  // FIX 8: Explicitly set onUpdate: NoAction
+  user          User        @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  type          LeaveType   @relation(fields: [typeId], references: [id])
+  // FIX 9: Explicitly set onUpdate: NoAction
+  approver      User?       @relation("ApprovedRequests", fields: [approverId], references: [id], onDelete: NoAction, onUpdate: NoAction) 
+
+  @@map("leave_requests")
 }

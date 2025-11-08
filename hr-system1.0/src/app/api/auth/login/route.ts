@@ -1,66 +1,105 @@
-// src/app/api/auth/login/route.ts (UPDATED)
+// src/app/api/auth/login/route.ts
 
 import { NextResponse } from 'next/server';
-import prisma from '../../../lib/prisma';
+import prisma from '../../../lib/prisma'; // Use the standard import path
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken'; // <-- NEW IMPORT
+import jwt from 'jsonwebtoken'; 
 
 // --- Environment Variable Check ---
-// IMPORTANT: Ensure this variable is set in Vercel and your local .env file
 const JWT_SECRET = process.env.JWT_SECRET; 
 
 if (!JWT_SECRET) {
-  // Fail fast if the secret is missing (only for development checks)
-  console.error("JWT_SECRET environment variable is not set.");
-  // Throw an error or handle gracefully in production
+  console.error("FATAL ERROR: JWT_SECRET environment variable is not set.");
+  // In a real production app, you might crash the server startup if this is missing.
 }
 
+// Ensure the JWT_SECRET is treated as a string for jwt.sign
+const SECRET_KEY = JWT_SECRET || 'fallback-secret-for-dev-only-do-not-use-in-prod';
+
 export async function POST(request: Request) {
-  try {
-    const { email, password } = await request.json();
+  try {
+    const { email, password } = await request.json();
 
-    // ... (Steps 1, 2, 3, 4: Validation, User lookup, Password comparison - NO CHANGE)
+    // 1. Basic Input Validation
+    if (!email || !password) {
+      return NextResponse.json(
+        { message: 'Email and password are required.' },
+        { status: 400 }
+      );
+    }
 
-    const user = await prisma.user.findUnique({
-      // ... (existing query, including passwordHash: true)
-    });
-    
-    // (Password validation logic here...)
+    // 2. User lookup: FIX - Must include 'where' and ensure passwordHash is selected
+    const user = await prisma.user.findUnique({
+      where: {
+        email: email,
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        roleId: true,
+        passwordHash: true, // MUST be selected to be available for comparison
+        isActive: true, // Check if the user is active
+      },
+    });
+    
+    // 3. Handle User Not Found or Inactive: FIX - Check for null
+    if (!user) {
+      return NextResponse.json(
+        { message: 'Invalid credentials or user not found.' },
+        { status: 401 }
+      );
+    }
 
-    // --- NEW JWT GENERATION LOGIC ---
-    
-    // 5. Define the payload (the data we embed in the token)
-    const payload = {
-      // Use the database ID (MongoDB ObjectId)
-      userId: user.id, 
-      email: user.email,
-      roleId: user.roleId, // Crucial for Role-Based Access Control (RBAC)
-    };
+    if (!user.isActive) {
+        return NextResponse.json(
+          { message: 'Account is inactive. Please contact HR.' },
+          { status: 403 }
+        );
+    }
 
-    // 6. Generate the JWT (signed with the secret key)
-    const token = jwt.sign(
-      payload, 
-      JWT_SECRET!, // Use the secret key
-      { expiresIn: '1d' } // Token expires in 1 day (standard practice)
-    );
+    // 4. Password Comparison
+    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    
+    if (!isPasswordValid) {
+      return NextResponse.json(
+        { message: 'Invalid credentials.' },
+        { status: 401 }
+      );
+    }
+    
+    // 5. Define the payload
+    const payload = {
+      userId: user.id, 
+      email: user.email,
+      roleId: user.roleId, 
+    };
 
-    // 7. Successful Login: Prepare and return the response
-    const { passwordHash, ...userWithoutHash } = user;
+    // 6. Generate the JWT (using the resolved SECRET_KEY)
+    const token = jwt.sign(
+      payload, 
+      SECRET_KEY, 
+      { expiresIn: '1d' } 
+    );
 
-    return NextResponse.json(
-      { 
-        message: 'Login successful.', 
-        user: userWithoutHash,
-        token: token, // <-- RETURN THE JWT HERE
-        expiresIn: '1d' 
-      },
-      { status: 200 } 
-    );
-  } catch (error) {
-    console.error('Login process error:', error);
-    return NextResponse.json(
-      { message: 'An internal server error occurred during login.' },
-      { status: 500 }
-    );
-  }
+    // 7. Successful Login: Prepare and return the response
+    // Destructure to exclude passwordHash before sending user data to the client
+    const { passwordHash, ...userWithoutHash } = user;
+
+    return NextResponse.json(
+      { 
+        message: 'Login successful.', 
+        user: userWithoutHash,
+        token: token, 
+        expiresIn: '1d' 
+      },
+      { status: 200 } 
+    );
+  } catch (error) {
+    console.error('Login process error:', error);
+    return NextResponse.json(
+      { message: 'An internal server error occurred during login.' },
+      { status: 500 }
+    );
+  }
 }

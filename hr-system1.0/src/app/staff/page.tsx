@@ -2,18 +2,19 @@
 
 "use client";
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { toast } from 'sonner'; // <-- UPDATED: Import toast function directly from Sonner
+import { toast } from 'sonner';
+import { useSession } from 'next-auth/react'; // <-- RECOMMENDED: Use NextAuth session for token/role
 
 // Shadcn/Custom Imports
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Dialog, DialogTrigger } from '@/components/ui/dialog';
-// REMOVED: import { useToast } from '@/components/ui/use-toast';
-import { DataTable } from '@/components/ui/data-table'; // Assume this exists
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog'; 
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DataTable } from '@/components/ui/data-table';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import { PlusCircle } from 'lucide-react';
 
 // Component Imports
 import { StaffRegistrationForm } from '@/components/staff-registration-form';
@@ -21,17 +22,20 @@ import { StaffEditModal } from '@/components/staff-edit-modal';
 import { ColumnDef } from '@tanstack/react-table';
 
 // Interfaces (Define shapes for better type safety)
+// This interface defines the data structure required for the table and actions
 interface StaffMember {
     id: string;
     fullName: string;
     email: string;
     jobTitle: string | null;
     department: string | null;
+    phoneNumber: string | null;
     isActive: boolean;
-    role: { name: string; id: string }; 
-    roleId: string; // Needed for the edit form
+    role: { name: string; id: string };
+    roleId: string;
 }
 
+// This interface matches the data structure required by StaffEditModal
 interface StaffEditData {
     id: string;
     fullName: string;
@@ -44,70 +48,85 @@ interface StaffEditData {
 }
 
 const StaffManagementPage: React.FC = () => {
+    // --- AUTH/TOKEN STATE (Using NextAuth is highly recommended, but keeping localStorage for now)
+    // NOTE: This logic should ideally be replaced with useSession() for a robust NextAuth setup.
+    const [token, setToken] = useState<string>('');
+    const router = useRouter();
+
+    // --- Data & Loading State ---
     const [staff, setStaff] = useState<StaffMember[]>([]);
     const [isLoading, setIsLoading] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
-    const [token, setToken] = useState<string>('');
 
+    // --- Modal State ---
     const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const [editingStaff, setEditingStaff] = useState<StaffEditData | null>(null);
 
-    // REMOVED: const { toast } = useToast();
-    const router = useRouter();
 
-    // --- 1. Initial Auth and Token Check ---
-    useEffect(() => {
-        const authToken = localStorage.getItem('authToken');
-        const userRole = localStorage.getItem('userRole');
-
-        // NOTE: Replace these string literals with the actual role names or IDs you use for checking!
-        const isAuthorized = userRole === 'Administrator' || userRole === 'HR Manager'; 
-
-        if (!authToken || !isAuthorized) {
-            router.push(authToken ? '/dashboard' : '/login');
-            return;
-        }
-        
-        setToken(authToken);
-        fetchStaffData(authToken);
-    }, [router]);
-
-    // --- 2. Data Fetching Logic (GET /api/users) ---
-    const fetchStaffData = async (authToken: string) => {
+    // --- 1. Data Fetching Logic (GET /api/staff) ---
+    // Use useCallback to memoize the fetch function
+    const fetchStaffData = useCallback(async (authToken: string) => {
+        if (!authToken) return;
         setIsLoading(true);
         setError(null);
 
         try {
-            const response = await fetch('/api/users', {
+            const response = await fetch('/api/staff', {
                 method: 'GET',
                 headers: { 'Authorization': `Bearer ${authToken}` },
             });
 
             if (!response.ok) {
+                // Handle 403 Forbidden specifically
+                if (response.status === 403) {
+                     throw new Error('Access Denied: You do not have permission to view this page.');
+                }
                 throw new Error('Failed to fetch staff data.');
             }
 
             const data = await response.json();
-            setStaff(data.users || []);
-            
-        } catch (error) {
+            setStaff(data.staff || []);
+
+        } catch (error: any) {
             console.error('Staff data fetching error:', error);
-            setError('Could not connect to the staff API or load data.');
+            setError(error.message || 'Could not load staff data.');
+            toast.error("Data Load Error", { description: error.message || "Failed to load staff list." });
         } finally {
             setIsLoading(false);
         }
-    };
-    
+    }, []);
+
+    // --- 2. Initial Auth and Data Load ---
+    useEffect(() => {
+        // --- WARNING: LocalStorage for auth is insecure. Replace with useSession() ---
+        const authToken = localStorage.getItem('authToken');
+        const userRole = localStorage.getItem('userRole'); // Assuming this is set on login
+
+        // Check for token and Authorization (case-sensitive matching is critical)
+        const isAuthorized = userRole === 'HR Manager' || userRole === 'Administrator';
+
+        if (!authToken || !isAuthorized) {
+            // Redirect unauthorized users
+            const redirectPath = authToken ? '/dashboard' : '/login';
+            toast.error("Access Denied.", { description: "You are not authorized to view this page." });
+            router.push(redirectPath);
+            return;
+        }
+
+        setToken(authToken);
+        fetchStaffData(authToken);
+    }, [router, fetchStaffData]); // Added fetchStaffData as dependency since it's memoized
+
     // --- 3. CRUD Action Handlers ---
-    
+
     const handleEdit = (staffMember: StaffMember) => {
         // Map the full StaffMember object to the required StaffEditData structure
         const editData: StaffEditData = {
             id: staffMember.id,
             fullName: staffMember.fullName,
             email: staffMember.email,
-            roleId: staffMember.roleId, 
+            roleId: staffMember.roleId, // Important for the edit modal
             jobTitle: staffMember.jobTitle,
             department: staffMember.department,
             phoneNumber: staffMember.phoneNumber,
@@ -117,10 +136,10 @@ const StaffManagementPage: React.FC = () => {
         setIsEditModalOpen(true);
     };
 
-    // --- Delete Logic (DELETE /api/users/[id]) ---
+    // --- Delete Logic (DELETE /api/staff/[id]) ---
     const handleDelete = async (staffId: string) => {
         try {
-            const response = await fetch(`/api/users/${staffId}`, {
+            const response = await fetch(`/api/staff/${staffId}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` },
             });
@@ -130,12 +149,10 @@ const StaffManagementPage: React.FC = () => {
                 throw new Error(errorData.message || 'Deletion failed.');
             }
 
-            // UPDATED: Use Sonner syntax
             toast.success("Staff member deleted successfully.");
             fetchStaffData(token); // Re-fetch data
-            
+
         } catch (error: any) {
-            // UPDATED: Use Sonner syntax
             toast.error(error.message || "An unexpected error occurred during deletion.");
         }
     };
@@ -144,18 +161,23 @@ const StaffManagementPage: React.FC = () => {
     const columns: ColumnDef<StaffMember>[] = useMemo(() => [
         { accessorKey: 'fullName', header: 'Name' },
         { accessorKey: 'email', header: 'Email' },
-        { accessorKey: 'role.name', header: 'Role' },
-        { accessorKey: 'jobTitle', header: 'Job Title' },
-        { accessorKey: 'department', header: 'Department' },
+        { 
+            accessorKey: 'role.name', 
+            header: 'Role',
+            cell: ({ row }) => <span className="font-medium">{row.original.role.name}</span>
+        },
+        { accessorKey: 'jobTitle', header: 'Job Title', cell: ({ row }) => row.original.jobTitle || 'N/A' },
+        { accessorKey: 'department', header: 'Department', cell: ({ row }) => row.original.department || 'N/A' },
+        { accessorKey: 'phoneNumber', header: 'Phone Number', cell: ({ row }) => row.original.phoneNumber || 'N/A' },
         {
             accessorKey: 'isActive',
             header: 'Status',
             cell: ({ row }) => (
-                <span 
+                <span
                     className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        row.original.isActive 
-                            ? 'bg-green-100 text-green-800' 
-                            : 'bg-red-100 text-red-800'
+                        row.original.isActive
+                            ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300'
+                            : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300'
                     }`}
                 >
                     {row.original.isActive ? 'Active' : 'Inactive'}
@@ -166,9 +188,9 @@ const StaffManagementPage: React.FC = () => {
             id: 'actions',
             header: 'Actions',
             cell: ({ row }) => (
-                <div className="space-x-2">
+                <div className="flex space-x-2">
                     <Button variant="outline" size="sm" onClick={() => handleEdit(row.original)}>Edit</Button>
-                    
+
                     {/* Delete Confirmation Dialog */}
                     <AlertDialog>
                         <AlertDialogTrigger asChild>
@@ -183,7 +205,11 @@ const StaffManagementPage: React.FC = () => {
                             </AlertDialogHeader>
                             <AlertDialogFooter>
                                 <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => handleDelete(row.original.id)}>
+                                {/* Call handleDelete only after the final confirmation */}
+                                <AlertDialogAction 
+                                    onClick={() => handleDelete(row.original.id)}
+                                    className="bg-red-600 hover:bg-red-700"
+                                >
                                     Confirm Delete
                                 </AlertDialogAction>
                             </AlertDialogFooter>
@@ -192,48 +218,65 @@ const StaffManagementPage: React.FC = () => {
                 </div>
             ),
         },
-    ], [token]);
-    
+    ], [token, handleDelete, handleEdit]); // Dependencies added
+
     // --- 5. Render Logic ---
-    if (!token && !isLoading) {
-        return null; // Redirect is handled in useEffect
+
+    // Show skeleton if token is available but data is loading
+    if (isLoading && token) {
+        return (
+            <div className="container p-8 space-y-6">
+                <Skeleton className="h-10 w-1/3" />
+                <Card className="p-4 space-y-4">
+                    <Skeleton className="h-8 w-full" />
+                    <Skeleton className="h-8 w-full" />
+                    <Skeleton className="h-8 w-full" />
+                </Card>
+            </div>
+        );
+    }
+    
+    // Only render the page content if we have a token (meaning auth check passed)
+    if (!token) {
+        return null; // The redirect is already handled in useEffect
     }
 
     return (
-        <div className="container p-8">
+        <div className="container p-8 space-y-6">
+            
             {/* Header and Registration Button */}
-            <div className="flex justify-between items-center mb-6">
-                <h1 className="text-3xl font-bold">👤 Staff Management</h1>
+            <div className="flex justify-between items-center">
+                <h1 className="text-3xl font-bold">👤 Staff Directory</h1>
                 <Dialog open={isRegisterModalOpen} onOpenChange={setIsRegisterModalOpen}>
                     <DialogTrigger asChild>
-                        <Button>+ Register New Staff</Button>
+                        <Button>
+                            <PlusCircle className="mr-2 h-4 w-4" />
+                            Register New Staff
+                        </Button>
                     </DialogTrigger>
-                    {/* Dialog Content for Registration */}
-                    <StaffRegistrationForm 
-                        onSuccess={() => { fetchStaffData(token); setIsRegisterModalOpen(false); }} 
-                        token={token} 
-                    />
+                    <DialogContent className="sm:max-w-lg"> 
+                         <DialogHeader>
+                            <DialogTitle>Register New Staff Member</DialogTitle>
+                         </DialogHeader>
+                        <StaffRegistrationForm
+                            onSuccess={() => { fetchStaffData(token); setIsRegisterModalOpen(false); }}
+                            token={token}
+                        />
+                    </DialogContent>
                 </Dialog>
             </div>
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Staff Directory</CardTitle>
+                    <CardTitle>Staff List ({staff.length})</CardTitle>
                 </CardHeader>
                 <CardContent>
                     {error && (
-                        <div className="text-red-600 mb-4">{error}</div>
+                        <div className="text-red-600 mb-4 font-medium">{error}</div>
                     )}
                     
-                    {isLoading ? (
-                        <div className="space-y-4">
-                            <Skeleton className="h-8 w-full" />
-                            <Skeleton className="h-8 w-full" />
-                            <Skeleton className="h-8 w-full" />
-                        </div>
-                    ) : (
-                        <DataTable columns={columns} data={staff} />
-                    )}
+                    {/* Render DataTable */}
+                    <DataTable columns={columns} data={staff} filterColumn="fullName"/>
                 </CardContent>
             </Card>
 

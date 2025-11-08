@@ -1,88 +1,71 @@
-// src/lib/authMiddleware.ts
+// src/lib/authMiddleware.ts (Refined for App Router and Authorization)
 
 import { NextRequest, NextResponse } from 'next/server';
-import jwt from 'jsonwebtoken';
+import jwt, { JwtPayload as BaseJwtPayload } from 'jsonwebtoken';
 
 // Define the structure of the token payload for type safety
-interface JwtPayload {
-  userId: string;
-  email: string;
-  roleId: string; // The role ID stored in MongoDB
+export interface AuthenticatedUserPayload extends BaseJwtPayload {
+    userId: string;
+    email: string;
+    roleId: string; // The MongoDB ObjectId of the user's role
 }
 
 // Get the JWT Secret from environment variables
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-for-dev-only-do-not-use-in-prod';
 
-// --- Define Permissions ---
-// We will define a list of roles that are allowed to access certain resources.
-// In a full system, these would be managed in the database, but we start simple.
-export const ACCESS_ROLES = {
-  // Roles allowed to create/read staff (e.g., POST and GET /api/users)
-  STAFF_MANAGEMENT: ['Administrator', 'HR Manager'],
-  // Roles allowed to manage projects (e.g., POST and PUT /api/projects)
-  PROJECT_MANAGEMENT: ['Administrator', 'Project Manager'],
-  // Everyone (used for basic viewing)
-  ALL_AUTHENTICATED: ['Administrator', 'HR Manager', 'Project Manager', 'Employee'],
-};
-
-
-// ----------------------------------------------------
-// Core Middleware Function
-// ----------------------------------------------------
-
-// This is a higher-order function that takes the required role IDs and returns the actual middleware.
-// NOTE: Since we are using MongoDB, we will check the 'roleId' against the IDs that belong to the required role names. 
-// For now, we will assume you have the actual MongoDB ObjectIds for these roles ready.
-export async function authenticate(request: NextRequest, requiredRoleIds: string[] = ACCESS_ROLES.ALL_AUTHENTICATED) {
-  // 1. Get the token from the Authorization header
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
-
-  if (!token) {
-    return NextResponse.json(
-      { message: 'Authentication failed. No token provided.' },
-      { status: 401 } // Unauthorized
-    );
-  }
-
-  if (!JWT_SECRET) {
-    console.error('JWT_SECRET is missing. Cannot verify token.');
-    return NextResponse.json(
-      { message: 'Server configuration error.' },
-      { status: 500 }
-    );
-  }
-
-  try {
-    // 2. Verify and decode the token
-    const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
-    
-    // 3. Authorization Check: Verify the user's role ID against the required IDs
-    const userRoleId = decoded.roleId;
-
-    if (!requiredRoleIds.includes(userRoleId)) {
-      return NextResponse.json(
-        { message: 'Forbidden: You do not have the required role to access this resource.' },
-        { status: 403 } // Forbidden
-      );
+/**
+ * Validates the JWT and returns the decoded payload if successful.
+ * If validation fails, it returns a NextResponse error object.
+ * * @param request The incoming NextRequest object.
+ * @returns {AuthenticatedUserPayload | NextResponse} The decoded user payload or an error response.
+ */
+export function authenticate(request: NextRequest): AuthenticatedUserPayload | NextResponse {
+    // 1. JWT Secret Check
+    if (JWT_SECRET === 'fallback-secret-for-dev-only-do-not-use-in-prod') {
+        console.error('FATAL ERROR: JWT_SECRET environment variable is not set. Using fallback.');
+        // For production, you should throw an error here.
     }
-    
-    // 4. Success: Attach the decoded user data to the request (if needed later)
-    // NOTE: In Next.js App Router, modifying the request object is complex. 
-    // We mainly rely on the success/failure response here.
-    
-    // Return the decoded payload to the route handler for use (e.g., logging)
-    return {
-      isAuthenticated: true,
-      user: decoded
-    };
-    
-  } catch (error) {
-    // This catches expired tokens, invalid signatures, etc.
-    console.error('Token validation error:', error);
-    return NextResponse.json(
-      { message: 'Authentication failed. Invalid or expired token.' },
-      { status: 401 } // Unauthorized
-    );
-  }
+
+    // 2. Get the token from the Authorization header
+    const authHeader = request.headers.get('authorization');
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
+
+    if (!token) {
+        return NextResponse.json(
+            { message: 'Authentication required. No token provided.' },
+            { status: 401 } // Unauthorized
+        );
+    }
+
+    try {
+        // 3. Verify and decode the token
+        const decoded = jwt.verify(token, JWT_SECRET) as AuthenticatedUserPayload;
+        
+        // 4. Success: Return the decoded payload
+        return decoded;
+
+    } catch (error) {
+        // 5. Handle token verification errors (expired tokens, invalid signatures, etc.)
+        console.error('Token validation error:', error);
+        return NextResponse.json(
+            { message: 'Authentication failed. Invalid or expired token.' },
+            { status: 401 } // Unauthorized
+        );
+    }
+}
+
+// ----------------------------------------------------
+// Authorization Utility (For use in your API route files)
+// ----------------------------------------------------
+
+/**
+ * Checks if the user's role ID is included in a list of required role IDs.
+ * NOTE: The logic to map role NAMES (e.g., 'HR Manager') to role IDs (ObjectIds) 
+ * must be handled in the calling API route or a dedicated cache utility.
+ * * @param userPayload The decoded payload from the authenticate function.
+ * @param requiredRoleIds An array of MongoDB role ObjectIds that are allowed access.
+ * @returns {boolean} True if authorized, false otherwise.
+ */
+export function authorize(userPayload: AuthenticatedUserPayload, requiredRoleIds: string[]): boolean {
+    return requiredRoleIds.includes(userPayload.roleId);
 }
